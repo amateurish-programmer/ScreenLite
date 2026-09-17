@@ -25,7 +25,7 @@ def test_ddagrab_uses_explicit_monitor_local_mapping(tmp_path):
     args = build_ddagrab_command(
         SimpleNamespace(x=40, y=60, width=801, height=601), tmp_path / "record.mkv", output_idx=2
     )
-    assert "ddagrab=output_idx=2:framerate=30:offset_x=40:offset_y=60:video_size=800x600" in args
+    assert "ddagrab=output_idx=2:framerate=30:offset_x=40:offset_y=60:video_size=800x600:draw_mouse=1" in args
     assert "hwdownload,format=bgra" in args
     assert args[args.index("-c:v") + 1] == "h264_mf"
     assert "-hw_encoding" in args
@@ -230,7 +230,7 @@ def test_record_stop_finalizes_mkv_but_cancel_retains_partial(qtbot, tmp_path, m
 
     # Substitute only the capture device: exercise the real long-running process,
     # stdin stop, container finalization and publication without capturing a user desktop.
-    def synthetic_capture(rect, path, fps, backend):
+    def synthetic_capture(rect, path, fps, backend, **options):
         return [
             "-hide_banner",
             "-n",
@@ -274,3 +274,134 @@ def test_record_stop_finalizes_mkv_but_cancel_retains_partial(qtbot, tmp_path, m
         check=False,
     )
     assert probe.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "quality,mf_quality,crf", [("ultra", 90, 16), ("clear", 82, 18), ("balanced", 72, 23), ("small", 58, 28)]
+)
+def test_record_profiles_and_cursor_apply_to_hardware_and_fallback(tmp_path, quality, mf_quality, crf):
+    from screenlite.video import build_record_command
+
+    rect = SimpleNamespace(x=-1900, y=20, width=320, height=240)
+    local = SimpleNamespace(x=20, y=20, width=320, height=240)
+    for backend, hardware in [("ddagrab-hardware", "1"), ("ddagrab-software", "0")]:
+        args = build_record_command(
+            rect,
+            tmp_path / "out.mkv",
+            backend=backend,
+            local_rect=local,
+            output_idx=2,
+            draw_mouse=False,
+            quality=quality,
+        )
+        assert args[args.index("-quality") + 1] == str(mf_quality)
+        assert args[args.index("-rate_control") + 1] == "quality"
+        assert args[args.index("-hw_encoding") + 1] == hardware
+        assert "output_idx=2" in args[args.index("-i") + 1]
+        assert "draw_mouse=0" in args[args.index("-i") + 1]
+        assert "offset_x=20" in args[args.index("-i") + 1]
+    fallback = build_record_command(rect, tmp_path / "out.mkv", quality=quality, draw_mouse=False)
+    assert fallback[fallback.index("-crf") + 1] == str(crf)
+    assert fallback[fallback.index("-draw_mouse") + 1] == "0"
+
+
+def test_ddagrab_without_local_mapping_is_rejected(tmp_path):
+    from screenlite.video import build_record_command
+
+    with pytest.raises(ValueError):
+        build_record_command(
+            SimpleNamespace(x=0, y=0, width=320, height=240), tmp_path / "out.mkv", backend="ddagrab-hardware"
+        )
+
+
+@pytest.mark.parametrize("fraction,dimensions", [(0.75, b"240x180"), (0.5, b"160x120")])
+def test_real_transcode_fraction_of_source(qtbot, sample_video, tmp_path, fraction, dimensions):
+    from screenlite.video import VideoJob
+
+    ffmpeg, source = sample_video
+    target = tmp_path / "scaled.mp4"
+    job = VideoJob(tmp_path, ffmpeg=ffmpeg)
+    with qtbot.waitSignal(job.finished, timeout=30000):
+        job.transcode(source, target, 32768, 32768, "ultra", scale_fraction=fraction)
+    inspected = subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-i", str(target), "-f", "null", "-"],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+    assert dimensions in inspected.stderr
+
+
+@pytest.mark.parametrize("fraction", [0, -0.1, 1.1, float("nan"), float("inf")])
+def test_transcode_rejects_invalid_fractions(tmp_path, fraction):
+    from screenlite.video import build_transcode_command
+
+    with pytest.raises(ValueError):
+        build_transcode_command(tmp_path / "in.mp4", tmp_path / "out.mp4", 320, 240, scale_fraction=fraction)
+
+
+def test_probe_command_outputs_only_three_frames_to_null():
+    from screenlite.video import build_probe_command
+
+    args = build_probe_command(SimpleNamespace(x=0, y=0, width=320, height=240), "ddagrab-hardware")
+    assert args[-1] == "-"
+    assert args[-3:-1] == ["-f", "null"]
+    assert args[args.index("-frames:v") + 1] == "3"
+    assert "matroska" not in args
+
+
+@pytest.mark.parametrize(
+    "working,expected",
+    [("ddagrab-hardware", "ddagrab-hardware"), ("ddagrab-software", "ddagrab-software"), ("none", "gdigrab")],
+)
+def test_probe_selects_first_working_backend(qtbot, tmp_path, monkeypatch, working, expected):
+    import sys
+    from screenlite import video
+
+    attempted = []
+
+    def capability_process(rect, backend, **options):
+        attempted.append(backend)
+        return ["-c", f"raise SystemExit({0 if backend == working else 1})"]
+
+    monkeypatch.setattr(video, "build_probe_command", capability_process)
+    probe = video.RecorderProbe(tmp_path, ffmpeg=sys.executable)
+    with qtbot.waitSignal(probe.selected, timeout=10000) as selected:
+        probe.start(SimpleNamespace(x=0, y=0, width=320, height=240))
+        assert probe.is_running
+    assert selected.args == [expected]
+    assert attempted[0] == "ddagrab-hardware"
+    assert len(attempted) == (1 if working == "ddagrab-hardware" else 2)
+    assert not probe.is_running
+
+
+def test_probe_times_out_and_cancellation_never_selects(qtbot, tmp_path, monkeypatch):
+    import sys
+    from screenlite import video
+
+    monkeypatch.setattr(
+        video, "build_probe_command", lambda *args, **kwargs: ["-c", "import time; time.sleep(30)"]
+    )
+    probe = video.RecorderProbe(tmp_path, ffmpeg=sys.executable, timeout_ms=100)
+    with qtbot.waitSignal(probe.selected, timeout=5000) as selected:
+        probe.start(SimpleNamespace(x=0, y=0, width=320, height=240))
+    assert selected.args == ["gdigrab"]
+    selections = []
+    probe.selected.connect(selections.append)
+    with qtbot.waitSignal(probe.cancelled, timeout=5000):
+        probe.start(SimpleNamespace(x=0, y=0, width=320, height=240))
+        probe.cancel()
+    qtbot.waitUntil(lambda: not probe.is_running, timeout=5000)
+    assert selections == []
+
+
+def test_probe_missing_executable_fails_once(qtbot, tmp_path):
+    from screenlite.video import RecorderProbe
+
+    probe = RecorderProbe(tmp_path, ffmpeg=tmp_path / "missing.exe")
+    selected = []
+    probe.selected.connect(selected.append)
+    with qtbot.waitSignal(probe.failed, timeout=5000):
+        probe.start(SimpleNamespace(x=0, y=0, width=320, height=240))
+    assert not probe.is_running
+    assert selected == []

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QLabel, QMenu,
 from screenlite.capture import capture_monitor, image_pixmap
 from screenlite.config import SettingsStore
 from screenlite.geometry import Rect, logical_to_physical
-from screenlite.platform_win import Hotkeys, enable_dpi_awareness, monitor_bounds
+from screenlite.platform_win import Hotkeys, enable_dpi_awareness, exclude_from_capture, monitor_bounds
 
 
 def app_root() -> Path:
@@ -51,6 +51,8 @@ class Controller(QObject):
         self._closing_overlays = False
         self.hotkeys = None
         self.record_job = None
+        self.record_probe = None
+        self.record_hud = None
         self.countdown = None
         self._quit_after_record = False
         self._countdown_timer = QTimer(self)
@@ -168,14 +170,45 @@ class Controller(QObject):
         frame, bounds, scale = self.frames[name]
         local = Rect(rect.x(), rect.y(), rect.width(), rect.height())
         physical = logical_to_physical(local, bounds, scale)
+        single_screen = len(self.frames) == 1
         self._close_overlays()
         self.frames.clear()
         if mode == 'record':
-            self.arm_recording(physical)
+            monitor_local = Rect(physical.x - bounds.x, physical.y - bounds.y, physical.width, physical.height)
+            self.prepare_recording(physical, monitor_local, single_screen)
             return
         x, y = physical.x - bounds.x, physical.y - bounds.y
         image = frame.crop((x, y, min(frame.width, x + physical.width), min(frame.height, y + physical.height)))
-        self._show_image(image)
+        screen = next((s for s in self.app.screens() if s.name() == name), self.app.primaryScreen())
+        self._capture_anchor = (screen, rect)
+        self._show_capture(image)
+
+    def _show_capture(self, image):
+        from screenlite.ui.toolbars import ScreenshotToolbar
+        self.state = 'ready'
+        output = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
+        toolbar = ScreenshotToolbar(image, output, self.window)
+        if hasattr(self, '_capture_anchor'):
+            screen, rect = self._capture_anchor
+            available = screen.availableGeometry()
+            toolbar.adjustSize()
+            x = screen.geometry().x() + rect.x()
+            y = screen.geometry().y() + rect.y() + rect.height() + 10
+            toolbar.move(max(available.x(), min(x, available.right() - toolbar.width())),
+                         max(available.y(), min(y, available.bottom() - toolbar.height())))
+        detail = []
+        toolbar.details_requested.connect(lambda: detail.append(True))
+        toolbar.copied.connect(lambda: self.tray.showMessage('截图已复制', f'{image.width} × {image.height} px',
+                                                            QSystemTrayIcon.MessageIcon.Information, 1800))
+        if self.settings['copy_after_capture']:
+            QTimer.singleShot(0, toolbar.auto_copy)
+        try:
+            toolbar.exec()
+            if detail:
+                self._show_image(image)
+        finally:
+            toolbar.deleteLater()
+            self.state = 'idle'
 
     def _show_image(self, image):
         from screenlite.ui.dialogs import ImageDialog
@@ -183,7 +216,8 @@ class Controller(QObject):
         try:
             output = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
             dialog = ImageDialog(image, output, self.window)
-            dialog.quality_combo.setCurrentIndex(dialog.quality_combo.findData(self.settings['preset']))
+            preset = 'clear' if self.settings['preset'] == 'ultra' else self.settings['preset']
+            dialog.quality_combo.setCurrentIndex(max(0, dialog.quality_combo.findData(preset)))
             dialog.exec()
             dialog.deleteLater()
         finally:
@@ -196,6 +230,8 @@ class Controller(QObject):
             self.window.set_status('正在保存录制，请稍候…')
             self.tray.setToolTip('ScreenLite · 正在保存录制')
             self.record_job.stop_record()
+        elif self.state == 'probing':
+            self._cancel_probe()
         elif self.state == 'countdown':
             self._cancel_countdown()
         elif self.state == 'idle':
@@ -206,10 +242,63 @@ class Controller(QObject):
             except OSError as error:
                 self.error(str(error))
 
-    def arm_recording(self, rect):
+    def prepare_recording(self, rect, local_rect, single_screen):
+        if not single_screen:
+            self.arm_recording(rect)
+            return
+        from screenlite.video import RecorderProbe
+        self.state = 'probing'
+        self.window.set_status('正在准备录制…')
+        self.tray.setToolTip('ScreenLite · 正在准备录制，再按录屏快捷键可取消')
+        self.record_probe = RecorderProbe(self.root, parent=self)
+        self.record_probe.cancelled.connect(self.record_probe.deleteLater)
+
+        def selected(backend):
+            probe = self.record_probe
+            self.record_probe = None
+            if probe:
+                logging.getLogger(__name__).info('Recording backend: %s; probe: %s', backend, probe.diagnostics)
+                probe.deleteLater()
+            if self.state == 'probing':
+                self.arm_recording(rect, backend=backend, local_rect=local_rect)
+
+        def failed(message):
+            self._cancel_probe()
+            self.error(message)
+
+        self.record_probe.selected.connect(selected)
+        self.record_probe.failed.connect(failed)
+        self.record_probe.start(local_rect, output_idx=0, fps=self.settings['fps'],
+                                draw_mouse=self.settings['record_cursor'],
+                                quality='clear' if self.settings['preset'] == 'lossless' else self.settings['preset'])
+
+    def _cancel_probe(self):
+        if self.record_probe:
+            probe, self.record_probe = self.record_probe, None
+            if probe.is_running:
+                self.state = 'cancelling'
+
+                def cancelled():
+                    self.state = 'idle'
+                    if self._quit_after_record:
+                        self.request_quit()
+
+                probe.cancelled.connect(cancelled)
+                probe.cancel()
+                return
+            probe.deleteLater()
+        self.state = 'idle'
+        self.tray.setToolTip('ScreenLite · 随手截取与记录')
+
+    def arm_recording(self, rect, *, backend='auto', local_rect=None):
         self.state = 'countdown'
         self._record_rect = rect
-        self._remaining = 3
+        self._record_backend = backend
+        self._record_local = local_rect
+        self._remaining = self.settings['countdown']
+        if not self._remaining:
+            QTimer.singleShot(0, self._start_recording)
+            return
         self.countdown = QDialog()
         self.countdown.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
                                       | Qt.WindowType.Tool)
@@ -259,7 +348,10 @@ class Controller(QObject):
         self.record_job.started.connect(self._record_started)
         self.record_job.finished.connect(self._record_finished)
         self.record_job.failed.connect(self._record_failed)
-        self.record_job.start_record(self._record_rect, destination, fps=self.settings['fps'])
+        quality = 'clear' if self.settings['preset'] == 'lossless' else self.settings['preset']
+        self.record_job.start_record(self._record_rect, destination, fps=self.settings['fps'],
+                                     backend=self._record_backend, local_rect=self._record_local,
+                                     draw_mouse=self.settings['record_cursor'], quality=quality)
 
     def _record_started(self):
         if self.state == 'stopping':
@@ -268,16 +360,31 @@ class Controller(QObject):
         self.state = 'recording'
         self._elapsed.start()
         self._record_timer.start(1000)
+        from screenlite.ui.toolbars import RecordingToolbar
+        hud = RecordingToolbar()
+        hud.stop_requested.connect(self.toggle_record)
+        if exclude_from_capture(hud):
+            self.record_hud = hud
+            hud.show()
+        else:
+            hud.deleteLater()
         self._update_recording()
 
     def _update_recording(self):
         seconds = self._elapsed.elapsed() // 1000
         self.window.set_recording(True, seconds)
+        if self.record_hud:
+            self.record_hud.set_seconds(seconds)
         self.window.set_status('正在录制 · 使用录屏快捷键停止')
         self.tray.setToolTip(f'ScreenLite · 正在录制 {seconds // 60:02d}:{seconds % 60:02d}')
 
     def _release_recording(self):
         self._record_timer.stop()
+        if self.record_hud:
+            self.record_hud.blockSignals(True)
+            self.record_hud.close()
+            self.record_hud.deleteLater()
+            self.record_hud = None
         if self.record_job:
             self.record_job.deleteLater()
             self.record_job = None
@@ -304,7 +411,8 @@ class Controller(QObject):
         try:
             dialog = VideoExportDialog(source, self.root, self.window)
             dialog.output_directory = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
-            dialog.quality_combo.setCurrentIndex(dialog.quality_combo.findData(self.settings['preset']))
+            preset = 'clear' if self.settings['preset'] == 'lossless' else self.settings['preset']
+            dialog.quality_combo.setCurrentIndex(max(0, dialog.quality_combo.findData(preset)))
             dialog.exec()
             if recorded and dialog.output_path:
                 # Delete only this application's known original after a successful export.
@@ -373,6 +481,12 @@ class Controller(QObject):
             self.state = 'idle'
 
     def request_quit(self):
+        if self.state == 'probing':
+            self._quit_after_record = True
+            self._cancel_probe()
+        if self.state == 'cancelling':
+            self._quit_after_record = True
+            return
         if self.state in ('starting', 'recording', 'stopping'):
             self._quit_after_record = True
             self.state = 'stopping'

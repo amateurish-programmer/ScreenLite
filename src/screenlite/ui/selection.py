@@ -163,8 +163,9 @@ class SelectionOverlay(QWidget):
             for point in self._handles().values():
                 painter.drawRect(QRectF(point.x() - 3, point.y() - 3, 6, 6))
             ratio = self.pixmap.devicePixelRatio()
-            text = f'{round(r.width() * ratio)} × {round(r.height() * ratio)} px'
-            label = QRect(max(4, min(self.width() - 170, r.x())), max(4, r.y() - 32), 164, 26)
+            text = (f'X: {round(r.x() * ratio)}  Y: {round(r.y() * ratio)}   ·   '
+                    f'{round(r.width() * ratio)} × {round(r.height() * ratio)} px')
+            label = QRect(max(4, min(self.width() - 300, r.x())), max(4, r.y() - 32), 294, 26)
             painter.fillRect(label, QColor('#203334'))
             painter.setPen(QColor('white'))
             painter.drawText(label, Qt.AlignmentFlag.AlignCenter, text)

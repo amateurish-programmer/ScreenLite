@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -195,7 +196,9 @@ class ImageDialog(QDialog):
         self.format_combo.addItems(['PNG · 无损画质', 'JPEG · 通用小体积', 'WebP · 高效压缩'])
         form.addRow('文件格式', self.format_combo)
         self.size_combo = QComboBox()
-        self.size_combo.addItems(['原始尺寸', '50% · 缩小一半', '1080p · 适合大屏', '720p · 轻松分享', '自定义宽度'])
+        self.size_combo.addItems(['原始尺寸', '50% · 缩小一半', '1080p · 适合大屏', '720p · 轻松分享',
+                                 '自定义宽高 · 锁定比例', '75%', '25%', '长边 1920 px',
+                                 '长边 1280 px', '长边 720 px'])
         form.addRow('导出尺寸', self.size_combo)
         self.width_spin = QSpinBox()
         self.width_spin.setRange(1, 32768)
@@ -203,17 +206,26 @@ class ImageDialog(QDialog):
         self.width_spin.setSuffix(' px')
         self.width_spin.setEnabled(False)
         form.addRow('自定义宽度', self.width_spin)
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(1, 32768)
+        self.height_spin.setValue(min(32768, self.image.height))
+        self.height_spin.setSuffix(' px')
+        self.height_spin.setEnabled(False)
+        form.addRow('自定义高度', self.height_spin)
         self.quality_combo = QComboBox()
         for title, value in [('清晰 · 保留细节', 'clear'), ('均衡 · 推荐', 'balanced'), ('小巧 · 优先体积', 'small')]:
             self.quality_combo.addItem(title, value)
         self.quality_combo.setCurrentIndex(1)
+        self.quality_combo.addItem('无损 · PNG', 'lossless')
         form.addRow('画质偏好', self.quality_combo)
         layout.addLayout(form)
         self.status_label = label('', 'muted')
         layout.addWidget(self.status_label)
         self.size_combo.currentIndexChanged.connect(self._update_size)
-        self.width_spin.valueChanged.connect(self._update_size)
+        self.width_spin.valueChanged.connect(self._width_changed)
+        self.height_spin.valueChanged.connect(self._height_changed)
         self.format_combo.currentIndexChanged.connect(self._update_size)
+        self.quality_combo.currentIndexChanged.connect(self._quality_changed)
         actions = QHBoxLayout()
         self.copy_button = button('复制图片', self.copy_image)
         self.save_button = button('保存图片…', self.choose_export, 'primary')
@@ -233,12 +245,35 @@ class ImageDialog(QDialog):
             max_width, max_height = (1920, 1080) if index == 2 else (1280, 720)
             ratio = min(1, max_width / width, max_height / height)
         elif index == 4:
-            ratio = self.width_spin.value() / width
+            return self.width_spin.value(), self.height_spin.value()
+        elif index in (5, 6):
+            ratio = 0.75 if index == 5 else 0.25
+        elif index in (7, 8, 9):
+            ratio = min(1, (1920, 1280, 720)[index - 7] / max(width, height))
         return max(1, round(width * ratio)), max(1, round(height * ratio))
+
+    def _width_changed(self, width):
+        self.height_spin.blockSignals(True)
+        self.height_spin.setValue(max(1, round(width * self.image.height / self.image.width)))
+        self.height_spin.blockSignals(False)
+        self._update_size()
+
+    def _height_changed(self, height):
+        self.width_spin.blockSignals(True)
+        self.width_spin.setValue(max(1, round(height * self.image.width / self.image.height)))
+        self.width_spin.blockSignals(False)
+        self._update_size()
+
+    def _quality_changed(self):
+        if self.quality_combo.currentData() == 'lossless':
+            self.format_combo.setCurrentIndex(0)
+        self._update_size()
 
     def _update_size(self):
         self.width_spin.setEnabled(self.size_combo.currentIndex() == 4)
-        self.quality_combo.setEnabled(self.format_combo.currentIndex() != 0)
+        self.height_spin.setEnabled(self.size_combo.currentIndex() == 4)
+        if self.format_combo.currentIndex() != 0 and self.quality_combo.currentData() == 'lossless':
+            self.quality_combo.setCurrentIndex(1)
         width, height = self.output_size()
         self.status_label.setText(f'{self.image.width} × {self.image.height} → {width} × {height} px'
                                   + ('    PNG 保留完整画质' if self.format_combo.currentIndex() == 0 else ''))
@@ -272,7 +307,8 @@ class ImageDialog(QDialog):
         self.copy_button.setEnabled(False)
         self.status_label.setText('正在处理图片…')
         self._worker = _ImageWorker(self.image, self.output_size(), path,
-                                    self.quality_combo.currentData(), self)
+                                    'clear' if self.quality_combo.currentData() == 'lossless'
+                                    else self.quality_combo.currentData(), self)
         self._worker.succeeded.connect(self._copied if path is None else self._saved,
                                        Qt.ConnectionType.QueuedConnection)
         self._worker.failed.connect(self._image_failed, Qt.ConnectionType.QueuedConnection)
@@ -342,6 +378,17 @@ class SettingsDialog(QDialog):
             self.preset_combo.addItem(name, preset)
         self.preset_combo.setCurrentIndex(max(0, self.preset_combo.findData(settings.get('preset', 'balanced'))))
         form.addRow('默认画质', self.preset_combo)
+        self.copy_check = QCheckBox('截图后自动复制到剪贴板')
+        self.copy_check.setChecked(settings.get('copy_after_capture', True))
+        form.addRow('', self.copy_check)
+        self.countdown_combo = QComboBox()
+        self.countdown_combo.addItem('立即开始', 0)
+        self.countdown_combo.addItem('3 秒倒计时', 3)
+        self.countdown_combo.setCurrentIndex(max(0, self.countdown_combo.findData(settings.get('countdown', 3))))
+        form.addRow('录制倒计时', self.countdown_combo)
+        self.cursor_check = QCheckBox('录制时显示鼠标指针')
+        self.cursor_check.setChecked(settings.get('record_cursor', True))
+        form.addRow('', self.cursor_check)
         self.output_edit = QLineEdit(str(settings.get('output_dir', '')))
         row = QHBoxLayout()
         row.addWidget(self.output_edit)
@@ -367,6 +414,8 @@ class SettingsDialog(QDialog):
         result.update(screenshot_hotkey=self.capture_key.keySequence().toString(QKeySequence.SequenceFormat.PortableText),
                       record_hotkey=self.record_key.keySequence().toString(QKeySequence.SequenceFormat.PortableText),
                       fps=self.fps_combo.currentData(), preset=self.preset_combo.currentData(),
+                      copy_after_capture=self.copy_check.isChecked(),
+                      countdown=self.countdown_combo.currentData(), record_cursor=self.cursor_check.isChecked(),
                       output_dir=self.output_edit.text().strip())
         return result
 
@@ -404,14 +453,29 @@ class VideoExportDialog(QDialog):
         form = QFormLayout()
         self.size_combo = QComboBox()
         for title, size in [('原始尺寸', (32768, 32768)), ('1080p · 推荐', (1920, 1080)),
-                            ('720p · 轻松分享', (1280, 720)), ('480p · 更小体积', (854, 480))]:
+                            ('720p · 轻松分享', (1280, 720)), ('480p · 更小体积', (854, 480)),
+                            ('75%', (32768, 32768)), ('50%', (32768, 32768)), ('自定义宽高', (1920, 1080))]:
             self.size_combo.addItem(title, size)
         self.size_combo.setCurrentIndex(1)
         form.addRow('导出尺寸', self.size_combo)
+        self.width_spin = QSpinBox()
+        self.height_spin = QSpinBox()
+        for spin, initial in ((self.width_spin, 1920), (self.height_spin, 1080)):
+            spin.setRange(2, 32768)
+            spin.setValue(initial)
+            spin.setSuffix(' px')
+            spin.setEnabled(False)
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(self.width_spin)
+        custom_row.addWidget(label('×'))
+        custom_row.addWidget(self.height_spin)
+        form.addRow('自定义边界', custom_row)
+        self.size_combo.currentIndexChanged.connect(self._size_changed)
         self.quality_combo = QComboBox()
         for title, preset in [('清晰 · 保留细节', 'clear'), ('均衡 · 推荐', 'balanced'), ('小巧 · 优先体积', 'small')]:
             self.quality_combo.addItem(title, preset)
         self.quality_combo.setCurrentIndex(1)
+        self.quality_combo.addItem('极清 · 更高画质', 'ultra')
         form.addRow('画质偏好', self.quality_combo)
         layout.addLayout(form)
         self.progress = QProgressBar()
@@ -428,6 +492,10 @@ class VideoExportDialog(QDialog):
         row.addStretch()
         row.addWidget(self.save_button)
         layout.addLayout(row)
+
+    def _size_changed(self, index):
+        self.width_spin.setEnabled(index == 6 and not self.is_busy)
+        self.height_spin.setEnabled(index == 6 and not self.is_busy)
 
     @property
     def is_busy(self):
@@ -464,7 +532,14 @@ class VideoExportDialog(QDialog):
         self.cancel_button.setText('取消导出')
         self.progress.setRange(0, 0)
         self.status_label.setText('正在导出视频…')
-        self._job.transcode(self.source, target, *self.size_combo.currentData(), self.quality_combo.currentData())
+        index = self.size_combo.currentIndex()
+        size = ((self.width_spin.value(), self.height_spin.value()) if index == 6
+                else self.size_combo.currentData())
+        fraction = {4: 0.75, 5: 0.5}.get(index)
+        self.width_spin.setEnabled(False)
+        self.height_spin.setEnabled(False)
+        options = {'scale_fraction': fraction} if fraction is not None else {}
+        self._job.transcode(self.source, target, *size, self.quality_combo.currentData(), **options)
 
     def _progress_changed(self, value):
         if value >= 0:
@@ -478,6 +553,7 @@ class VideoExportDialog(QDialog):
         self.save_button.setEnabled(True)
         self.size_combo.setEnabled(True)
         self.quality_combo.setEnabled(True)
+        self._size_changed(self.size_combo.currentIndex())
         self.cancel_button.setText('关闭')
         self.progress.setRange(0, 100)
         if self._close_when_done:

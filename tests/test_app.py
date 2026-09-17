@@ -29,7 +29,7 @@ def test_record_stop_updates_state_and_preserves_source_until_export(qtbot, qapp
     from PySide6.QtCore import QTimer
     from screenlite import video
 
-    def synthetic_capture(rect, path, fps, backend):
+    def synthetic_capture(rect, path, fps, backend, **options):
         return ['-hide_banner', '-n', '-re', '-f', 'lavfi', '-i', 'testsrc2=size=64x48:rate=10',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-threads', '2', '-f', 'matroska', str(path)]
 

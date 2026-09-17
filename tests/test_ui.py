@@ -85,7 +85,8 @@ def test_image_copy_uses_selected_size(qtbot, tmp_path):
 
 def test_settings_round_trip_keeps_other_values(qtbot):
     settings = {'screenshot_hotkey': 'Ctrl+Alt+A', 'record_hotkey': 'Ctrl+Alt+R',
-                'fps': 60, 'preset': 'small', 'output_dir': 'D:/Shots', 'extra': 'keep'}
+                'fps': 60, 'preset': 'small', 'output_dir': 'D:/Shots', 'extra': 'keep',
+                'copy_after_capture': True, 'countdown': 3, 'record_cursor': True}
     dialog = SettingsDialog(settings)
     qtbot.addWidget(dialog)
     assert dialog.values() == settings
@@ -193,3 +194,31 @@ def test_video_chooser_reports_unusable_directory(qtbot, tmp_path):
     dialog.output_directory = invalid_directory
     dialog.choose_export()
     assert '无法创建' in dialog.status_label.text()
+
+
+def test_image_extra_sizes_and_locked_height(qtbot, tmp_path):
+    dialog = ImageDialog(Image.new('RGB', (2400, 1600)), tmp_path)
+    qtbot.addWidget(dialog)
+    dialog.size_combo.setCurrentIndex(5)
+    assert dialog.output_size() == (1800, 1200)
+    dialog.size_combo.setCurrentIndex(6)
+    assert dialog.output_size() == (600, 400)
+    dialog.size_combo.setCurrentIndex(7)
+    assert dialog.output_size() == (1920, 1280)
+    dialog.size_combo.setCurrentIndex(4)
+    dialog.height_spin.setValue(600)
+    assert dialog.output_size() == (900, 600)
+    dialog.width_spin.setValue(300)
+    assert dialog.output_size() == (300, 200)
+    dialog.quality_combo.setCurrentIndex(dialog.quality_combo.findData('lossless'))
+    assert dialog.format_combo.currentIndex() == 0
+
+
+def test_new_settings_controls_round_trip(qtbot):
+    settings = {'copy_after_capture': False, 'countdown': 0, 'record_cursor': False}
+    dialog = SettingsDialog(settings)
+    qtbot.addWidget(dialog)
+    values = dialog.values()
+    assert values['copy_after_capture'] is False
+    assert values['countdown'] == 0
+    assert values['record_cursor'] is False

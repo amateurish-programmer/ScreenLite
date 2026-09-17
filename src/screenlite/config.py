@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 
 DEFAULTS = {'screenshot_hotkey': 'Ctrl+Alt+A', 'record_hotkey': 'Ctrl+Alt+R',
-            'fps': 30, 'preset': 'balanced', 'output_dir': ''}
+            'fps': 30, 'preset': 'balanced', 'output_dir': '', 'copy_after_capture': True,
+            'record_cursor': True, 'countdown': 3}
 
 
 class SettingsStore:
@@ -30,7 +31,11 @@ class SettingsStore:
                 continue
             if key == 'fps' and type(value) is int and value in (15, 30, 60):
                 result[key] = value
-            elif key == 'preset' and value in ('clear', 'balanced', 'small'):
+            elif key == 'preset' and value in ('ultra', 'clear', 'balanced', 'small', 'lossless'):
+                result[key] = value
+            elif key in ('copy_after_capture', 'record_cursor') and type(value) is bool:
+                result[key] = value
+            elif key == 'countdown' and type(value) is int and value in (0, 3):
                 result[key] = value
             elif key in ('screenshot_hotkey', 'record_hotkey', 'output_dir') and isinstance(value, str):
                 result[key] = value

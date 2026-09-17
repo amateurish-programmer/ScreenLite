@@ -31,6 +31,19 @@ def test_config_roundtrip_and_defaults(tmp_path):
     assert store.load()['screenshot_hotkey'] == 'Ctrl+Alt+S'
 
 
+def test_capture_preferences_and_ultra_quality_are_persisted(tmp_path):
+    store = SettingsStore(tmp_path)
+    assert store.load()['copy_after_capture'] is True
+    assert store.load()['record_cursor'] is True
+    assert store.load()['countdown'] == 3
+    store.save({'copy_after_capture': False, 'record_cursor': False, 'countdown': 0, 'preset': 'ultra'})
+    values = store.load()
+    assert values['copy_after_capture'] is False
+    assert values['record_cursor'] is False
+    assert values['countdown'] == 0
+    assert values['preset'] == 'ultra'
+
+
 def test_corrupt_config_is_preserved_and_recovers(tmp_path):
     store = SettingsStore(tmp_path)
     store.path.parent.mkdir(parents=True)

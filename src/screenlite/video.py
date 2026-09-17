@@ -8,7 +8,8 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from .media import find_ffmpeg, publish_file
 
-VIDEO_CRF = {"clear": 18, "balanced": 23, "small": 28}
+VIDEO_CRF = {"ultra": 16, "clear": 18, "balanced": 23, "small": 28}
+VIDEO_MF_QUALITY = {"ultra": 90, "clear": 82, "balanced": 72, "small": 58}
 _BASE = ["-hide_banner", "-n", "-progress", "pipe:1", "-nostats"]
 
 
@@ -23,14 +24,38 @@ def _capture_size(rect, fps: int) -> tuple[int, int]:
     return width, height
 
 
-def build_record_command(rect, path: str | Path, fps: int = 30, backend: str = "auto") -> list[str]:
-    """Build arguments (without executable) for desktop-global gdigrab capture.
+def build_record_command(
+    rect,
+    path: str | Path,
+    fps: int = 30,
+    backend: str = "auto",
+    *,
+    local_rect=None,
+    output_idx: int = 0,
+    draw_mouse: bool = True,
+    quality: str = "balanced",
+) -> list[str]:
+    """Build recording arguments. rect is global; local_rect is DXGI-local.
 
     auto intentionally uses gdigrab until a verified DXGI display mapping is
-    supplied to build_ddagrab_command. A failed process is never retried against
+    supplied via an explicitly selected backend. A failed process is never retried against
     a partially written recording.
     """
     width, height = _capture_size(rect, fps)
+    if quality not in VIDEO_CRF:
+        raise ValueError("未知的视频质量档位。")
+    if backend in ("ddagrab-hardware", "ddagrab-software"):
+        if local_rect is None or _capture_size(local_rect, fps) != (width, height):
+            raise ValueError("ddagrab 需要与全局选区大小一致的屏幕局部坐标。")
+        return build_ddagrab_command(
+            local_rect,
+            path,
+            fps,
+            output_idx,
+            hardware=backend == "ddagrab-hardware",
+            draw_mouse=draw_mouse,
+            quality=quality,
+        )
     if backend not in ("auto", "gdigrab"):
         raise ValueError("此录制入口使用 gdigrab；ddagrab 需要显式的屏幕编号与屏幕局部坐标。")
     return [
@@ -40,7 +65,7 @@ def build_record_command(rect, path: str | Path, fps: int = 30, backend: str = "
         "-framerate",
         str(fps),
         "-draw_mouse",
-        "1",
+        str(int(bool(draw_mouse))),
         "-offset_x",
         str(rect.x),
         "-offset_y",
@@ -55,7 +80,7 @@ def build_record_command(rect, path: str | Path, fps: int = 30, backend: str = "
         "-preset",
         "ultrafast",
         "-crf",
-        "20",
+        str(VIDEO_CRF[quality]),
         "-pix_fmt",
         "yuv420p",
         "-threads",
@@ -66,7 +91,16 @@ def build_record_command(rect, path: str | Path, fps: int = 30, backend: str = "
     ]
 
 
-def build_ddagrab_command(rect, path: str | Path, fps: int = 30, output_idx: int = 0) -> list[str]:
+def build_ddagrab_command(
+    rect,
+    path: str | Path,
+    fps: int = 30,
+    output_idx: int = 0,
+    *,
+    hardware: bool = True,
+    draw_mouse: bool = True,
+    quality: str = "balanced",
+) -> list[str]:
     """Explicit hardware strategy: rect must be local to the given DXGI output.
 
     Callers must verify output_idx and bounds against DXGI enumeration; a Qt
@@ -75,9 +109,11 @@ def build_ddagrab_command(rect, path: str | Path, fps: int = 30, output_idx: int
     width, height = _capture_size(rect, fps)
     if not isinstance(output_idx, int) or output_idx < 0 or min(rect.x, rect.y) < 0:
         raise ValueError("ddagrab 需要有效屏幕编号与非负的屏幕局部坐标。")
+    if quality not in VIDEO_MF_QUALITY:
+        raise ValueError("未知的视频质量档位。")
     capture = (
         f"ddagrab=output_idx={output_idx}:framerate={fps}:offset_x={rect.x}:"
-        f"offset_y={rect.y}:video_size={width}x{height}"
+        f"offset_y={rect.y}:video_size={width}x{height}:draw_mouse={int(bool(draw_mouse))}"
     )
     return [
         *_BASE,
@@ -91,9 +127,11 @@ def build_ddagrab_command(rect, path: str | Path, fps: int = 30, output_idx: int
         "-c:v",
         "h264_mf",
         "-hw_encoding",
-        "1",
-        "-b:v",
-        "8M",
+        str(int(bool(hardware))),
+        "-rate_control",
+        "quality",
+        "-quality",
+        str(VIDEO_MF_QUALITY[quality]),
         "-f",
         "matroska",
         str(path),
@@ -106,6 +144,8 @@ def build_transcode_command(
     max_width: int,
     max_height: int,
     preset: str = "balanced",
+    *,
+    scale_fraction: float | None = None,
 ) -> list[str]:
     """Fit video without upscaling, keeping even dimensions for H.264 4:2:0."""
     source, target = Path(source), Path(target)
@@ -115,8 +155,13 @@ def build_transcode_command(
         raise ValueError("未知的视频质量档位。")
     if any(not isinstance(value, int) or value < 2 for value in (max_width, max_height)):
         raise ValueError("视频最大宽高必须是至少为 2 的整数。")
+    if scale_fraction is not None and (
+        not isinstance(scale_fraction, (int, float)) or not 0 < scale_fraction <= 1
+    ):
+        raise ValueError("视频缩放比例必须大于 0 且不超过 1。")
+    factor = f"*{scale_fraction:g}" if scale_fraction is not None else ""
     scale = (
-        f"scale=w='min({max_width},iw)':h='min({max_height},ih)':"
+        f"scale=w='max(2,min({max_width},iw{factor}))':h='max(2,min({max_height},ih{factor}))':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
     )
     return [
@@ -149,6 +194,177 @@ def build_transcode_command(
         "mp4",
         str(target),
     ]
+
+
+def build_probe_command(
+    local_rect,
+    backend: str,
+    *,
+    output_idx: int = 0,
+    fps: int = 30,
+    draw_mouse: bool = True,
+    quality: str = "balanced",
+) -> list[str]:
+    """Encode three desktop frames to the null sink; never create a media file."""
+    if backend not in ("ddagrab-hardware", "ddagrab-software"):
+        raise ValueError("只能探测明确的 ddagrab 编码后端。")
+    command = build_ddagrab_command(
+        local_rect,
+        "-",
+        fps,
+        output_idx,
+        hardware=backend == "ddagrab-hardware",
+        draw_mouse=draw_mouse,
+        quality=quality,
+    )
+    return [*command[:-3], "-frames:v", "3", "-f", "null", "-"]
+
+
+class RecorderProbe(QObject):
+    """Probe an explicitly trusted DXGI mapping before countdown/recording.
+
+    For this release callers only map a single monitor to output_idx=0. Never
+    infer a multi-monitor DXGI mapping from Qt screen order. Both MF strategies
+    are tested with actual frames, then gdigrab is selected as the compatibility
+    fallback (validated when recording starts). Each attempt has a finite timeout.
+    cancel is silent and never emits selected. Keep this object alive until
+    is_running becomes false after cancellation.
+    """
+
+    selected = Signal(str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, root=None, parent=None, *, ffmpeg=None, timeout_ms: int = 4000):
+        super().__init__(parent)
+        if timeout_ms < 1:
+            raise ValueError("探测超时必须大于 0。")
+        self.root = Path(root) if root is not None else Path.cwd()
+        self._ffmpeg = Path(ffmpeg) if ffmpeg is not None else None
+        self._timeout_ms = timeout_ms
+        self._process: QProcess | None = None
+        self._active = False
+        self._cancelled = False
+        self._index = 0
+        self._candidates = ("ddagrab-hardware", "ddagrab-software")
+        self._rect = None
+        self._options = {}
+        self._stderr = ""
+        self.diagnostics: list[str] = []
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._timeout)
+
+    @property
+    def is_running(self) -> bool:
+        return self._active
+
+    def start(self, local_rect, output_idx=0, fps=30, draw_mouse=True, quality="balanced") -> None:
+        if self._active:
+            raise RuntimeError("录制能力探测正在运行。")
+        try:
+            # Validate the actual capture mapping even if a custom probe builder
+            # is supplied in tests; this also bounds invalid public parameters.
+            build_ddagrab_command(local_rect, "-", fps, output_idx, quality=quality)
+            self._ffmpeg = self._ffmpeg or find_ffmpeg(self.root)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.failed.emit(str(error))
+            return
+        self._rect = local_rect
+        self._options = {"output_idx": output_idx, "fps": fps, "draw_mouse": draw_mouse, "quality": quality}
+        self._index = 0
+        self._cancelled = False
+        self._active = True
+        self.diagnostics = []
+        self._attempt()
+
+    def _attempt(self) -> None:
+        if self._cancelled:
+            self._active = False
+            self.cancelled.emit()
+            return
+        if self._index == len(self._candidates):
+            self._active = False
+            self.selected.emit("gdigrab")
+            return
+        backend = self._candidates[self._index]
+        self._stderr = ""
+        process = QProcess(self)
+        self._process = process
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        # Bound Qt slots avoid a child->closure->parent ownership cycle during
+        # deferred process deletion. Such a cycle can destroy the parent from
+        # inside its child's destructor when a short-lived probe loses its owner.
+        process.readyReadStandardOutput.connect(self._read_probe_output)
+        process.started.connect(self._probe_started)
+        process.errorOccurred.connect(self._probe_error)
+        process.finished.connect(self._probe_finished)
+        try:
+            arguments = build_probe_command(self._rect, backend, **self._options)
+        except (ValueError, OSError) as error:
+            self._release_probe()
+            self._active = False
+            self.failed.emit(str(error))
+            return
+        process.start(str(self._ffmpeg), arguments)
+        self._timer.start(self._timeout_ms)
+
+    def _probe_started(self) -> None:
+        if self._cancelled and self._process:
+            self._process.kill()
+
+    def _read_probe_output(self) -> None:
+        process = self._process
+        if process:
+            self._stderr = (self._stderr + bytes(process.readAllStandardOutput()).decode("utf-8", "replace"))[
+                -4000:
+            ]
+
+    def _timeout(self) -> None:
+        if self._active and self._process:
+            self.diagnostics.append(f"{self._candidates[self._index]}: 探测超时")
+            self._process.kill()
+
+    def cancel(self) -> None:
+        if self._active:
+            self._cancelled = True
+            if self._process:
+                self._process.kill()
+
+    def _release_probe(self) -> None:
+        self._timer.stop()
+        if self._process:
+            self._process.deleteLater()
+            self._process = None
+
+    def _probe_error(self, error) -> None:
+        process = self.sender()
+        if process is not self._process or error != QProcess.ProcessError.FailedToStart:
+            return
+        message = process.errorString()
+        self._release_probe()
+        self._active = False
+        if self._cancelled:
+            self.cancelled.emit()
+        else:
+            self.failed.emit(f"无法启动 FFmpeg：{message}")
+
+    def _probe_finished(self, code: int, status) -> None:
+        process = self.sender()
+        if process is not self._process:
+            return
+        self._read_probe_output()
+        self._release_probe()
+        if self._cancelled:
+            self._active = False
+            self.cancelled.emit()
+        elif code == 0 and status == QProcess.ExitStatus.NormalExit:
+            self._active = False
+            self.selected.emit(self._candidates[self._index])
+        else:
+            self.diagnostics.append(f"{self._candidates[self._index]}: {self._stderr[-1200:]}")
+            self._index += 1
+            self._attempt()
 
 
 class VideoJob(QObject):
@@ -201,17 +417,39 @@ class VideoJob(QObject):
         self._target = target
         self.partial_path = target.with_name(f".{target.stem}.partial-{uuid.uuid4().hex}{suffix}")
 
-    def start_record(self, rect, path: str | Path, fps: int = 30, backend: str = "auto") -> None:
+    def start_record(
+        self,
+        rect,
+        path: str | Path,
+        fps: int = 30,
+        backend: str = "auto",
+        *,
+        local_rect=None,
+        output_idx: int = 0,
+        draw_mouse: bool = True,
+        quality: str = "balanced",
+    ) -> None:
         if self._active:
             raise RuntimeError("已有视频任务正在运行。")
         try:
             self._prepare(path, ".mkv")
-            args = build_record_command(rect, self.partial_path, fps, backend)
+            args = build_record_command(
+                rect,
+                self.partial_path,
+                fps,
+                backend,
+                local_rect=local_rect,
+                output_idx=output_idx,
+                draw_mouse=draw_mouse,
+                quality=quality,
+            )
             self._launch(args, "record")
         except (OSError, ValueError, RuntimeError) as error:
             self.failed.emit(str(error))
 
-    def transcode(self, source, target, max_width, max_height, preset="balanced") -> None:
+    def transcode(
+        self, source, target, max_width, max_height, preset="balanced", *, scale_fraction=None
+    ) -> None:
         if self._active:
             raise RuntimeError("已有视频任务正在运行。")
         try:
@@ -219,9 +457,13 @@ class VideoJob(QObject):
             if not source.is_file():
                 raise FileNotFoundError(f"找不到原文件：{source}")
             # Validate the public source/target pair before substituting staging.
-            build_transcode_command(source, target, max_width, max_height, preset)
+            build_transcode_command(
+                source, target, max_width, max_height, preset, scale_fraction=scale_fraction
+            )
             self._prepare(target, ".mp4")
-            args = build_transcode_command(source, self.partial_path, max_width, max_height, preset)
+            args = build_transcode_command(
+                source, self.partial_path, max_width, max_height, preset, scale_fraction=scale_fraction
+            )
             self._launch(args, "transcode")
         except (OSError, ValueError, RuntimeError) as error:
             self.failed.emit(str(error))

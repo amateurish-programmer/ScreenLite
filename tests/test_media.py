@@ -82,3 +82,28 @@ def test_find_ffmpeg_has_development_fallback(tmp_path):
     from screenlite.media import find_ffmpeg
 
     assert Path(find_ffmpeg(tmp_path)).is_file()
+
+
+@pytest.mark.parametrize(
+    "preset,jpeg_quality,webp_quality,webp_method",
+    [("clear", 95, 92, 4), ("balanced", 88, 82, 4), ("small", 75, 68, 6)],
+)
+def test_image_profiles_pass_specified_encoder_parameters(
+    tmp_path, monkeypatch, preset, jpeg_quality, webp_quality, webp_method
+):
+    from screenlite.media import export_image
+
+    original_save = Image.Image.save
+    observed = {}
+
+    def encode(image, path, format=None, **options):
+        observed[format] = options.copy()
+        return original_save(image, path, format=format, **options)
+
+    monkeypatch.setattr(Image.Image, "save", encode)
+    image = Image.new("RGB", (16, 16), "navy")
+    for suffix in ("jpg", "webp", "png"):
+        export_image(image, tmp_path / f"profile.{suffix}", 16, 16, preset)
+    assert observed["JPEG"]["quality"] == jpeg_quality
+    assert observed["WEBP"] == {"quality": webp_quality, "method": webp_method}
+    assert observed["PNG"] == {"optimize": True}

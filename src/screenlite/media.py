@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-IMAGE_QUALITY = {"clear": (92, 90), "balanced": (85, 80), "small": (72, 65)}
+IMAGE_QUALITY = {"clear": (95, 92), "balanced": (88, 82), "small": (75, 68)}
 
 
 def find_ffmpeg(root: str | Path) -> Path:
@@ -85,7 +85,7 @@ def export_image(
         resized = resized.convert(
             "RGBA" if "A" in resized.getbands() or "transparency" in resized.info else "RGB"
         )
-        options = {"quality": IMAGE_QUALITY[preset][1], "method": 4}
+        options = {"quality": IMAGE_QUALITY[preset][1], "method": 6 if preset == "small" else 4}
     else:
         options = {"optimize": True}
     descriptor, filename = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=".tmp", dir=target.parent)

@@ -16,6 +16,16 @@ def enable_dpi_awareness():
             pass
 
 
+def exclude_from_capture(window) -> bool:
+    """Exclude our own HUD; hide it if Windows cannot honor the request."""
+    if sys.platform != 'win32':
+        return False
+    user32 = ctypes.windll.user32
+    user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    return bool(user32.SetWindowDisplayAffinity(int(window.winId()), 0x11))
+
+
 def parse_hotkey(text: str) -> tuple[int, int]:
     parts = text.upper().replace(' ', '').split('+')
     modifiers = {'CTRL': 2, 'ALT': 1, 'SHIFT': 4, 'META': 8, 'WIN': 8}

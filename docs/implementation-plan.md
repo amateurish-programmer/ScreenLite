@@ -5,7 +5,7 @@
 ## 全局约束
 
 Windows 10/11 x64；Python 3.12；PySide6 Widgets；后台托盘；便携目录配置；中文界面；所有重型导出使用工作线程或进程。
-完整引用对话读取失败（Cloudflare 验证），仅已提供的预览可确认；后续补充设计必须注明，不伪称完整原文。
+完整引用对话已在后续重试中读取成功，见 conversation-source.md；追加自动复制、浮动工具条、HUD 排除捕获、完整尺寸和四档质量、录制前硬件探测。
 仅本项目源码、合成测试样本、文档进入仓库；桌面截图、录屏和用户导出不提交。
 
 ## 阶段 1：文档与基础
@@ -36,3 +36,10 @@ Windows 10/11 x64；Python 3.12；PySide6 Widgets；后台托盘；便携目录�
 ## 模块所有权
 foundation: geometry.py, config.py, platform_win.py, app.py；UI: ui/selection.py, ui/dialogs.py, ui/theme.py；media: media.py, video.py；delivery: scripts/, .github/, docs/。
 UI 契约：SelectionOverlay(screen, pixmap, mode='capture')，selected(QRect) 发出屏幕局部逻辑坐标，cancelled()；ImageDialog(PIL.Image, root, parent=None)；SettingsDialog(dict,parent=None).values()；MainWindow signals capture_requested, record_requested, compress_requested, settings_requested，set_recording(bool,seconds=0)，set_status(str)。
+
+## 补全阶段：对齐完整对话
+- [ ] 截图自动复制、紧凑浮动工具条；设置可关闭自动复制。
+- [ ] 图片75%/25%/长边与锁比宽高；视频75%/50%/自定义；四档质量原始参数。
+- [ ] 录制HUD、Windows捕获排除，失败隐藏；0/3秒倒计时、鼠标录制设置。
+- [ ] 单屏录制前异步硬件/软件探测与兼容回退。
+- [ ] HTML 纳入完整来源和原七阶段映射；阶段签名提交与推送。
