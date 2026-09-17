@@ -247,7 +247,8 @@ def build(output: Path) -> Path:
     shutil.copy2(ROOT / "README.md", staged / "README.md")
     shutil.copy2(ROOT / "requirements-lock.txt", staged / "requirements-lock.txt")
     (staged / "docs").mkdir()
-    for filename in ("development.html", "progress.md", "THIRD_PARTY.md", "USAGE.md", "conversation-source.md", "ACCEPTANCE.md"):
+    for filename in ("development.html", "progress.md", "THIRD_PARTY.md", "USAGE.md",
+                     "conversation-source.md", "ACCEPTANCE.md", "MEMORY.md"):
         shutil.copy2(ROOT / "docs" / filename, staged / "docs" / filename)
     collect_licenses(staged, packages, ffmpeg)
     (staged / "BUILD-INFO.json").write_text(

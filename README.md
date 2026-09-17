@@ -30,5 +30,8 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\python.exe scripts/build_portable.py
 ```
 
+Windows 原生窗口验收：`python scripts/check_portable_window.py dist/v0.2.0/ScreenLite/ScreenLite.exe`。
+合成 4K 重复操作内存测量：`python scripts/check_memory.py --cycles 100`，测量说明见 [MEMORY.md](docs/MEMORY.md)。
+
 可重复构建需先安装 `requirements-lock.txt` 中的固定版本。构建脚本拒绝覆盖旧产物，使用 `--output-dir` 指定新的输出目录。
 FFmpeg/Qt 版本、许可和分发边界见 [第三方组件说明](docs/THIRD_PARTY.md)。
