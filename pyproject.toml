@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "screenlite"
+version = "0.1.0"
+description = "Portable Windows screenshot, recording and media compression tool"
+requires-python = ">=3.12"
+dependencies = ["PySide6-Essentials>=6.8,<7", "mss>=10,<11", "Pillow>=11,<13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4", "ruff>=0.12", "pyinstaller>=6", "imageio-ffmpeg>=0.6"]
+
+[project.gui-scripts]
+screenlite = "screenlite.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 110
