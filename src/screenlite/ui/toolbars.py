@@ -18,7 +18,7 @@ class ScreenshotToolbar(QDialog):
 
     def __init__(self, image, root, parent=None):
         super().__init__(parent)
-        self.image = image.copy()
+        self.image = image  # Shared read-only selection, never mutate the source.
         self.root = Path(root)
         self._worker = None
         self._pending_action = None
@@ -94,6 +94,8 @@ class ScreenshotToolbar(QDialog):
 
     @Slot()
     def _finished(self):
+        if self._worker is None:
+            return
         self._worker.deleteLater()
         self._worker = None
         self.save_button.setEnabled(True)
@@ -102,6 +104,13 @@ class ScreenshotToolbar(QDialog):
             self.request_details()
         elif action == 'close':
             self.reject()
+
+    def release_resources(self):
+        if self._worker is not None:
+            self._worker.wait()
+            self._worker.deleteLater()
+            self._worker = None
+        self.image = None
 
     def request_details(self):
         if self._worker is not None:

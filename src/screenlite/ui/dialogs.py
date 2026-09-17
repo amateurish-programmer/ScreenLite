@@ -90,6 +90,7 @@ class _Illustration(QWidget):
 
 
 class MainWindow(QMainWindow):
+    quit_requested = Signal()
     capture_requested = Signal()
     record_requested = Signal()
     compress_requested = Signal()
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('ScreenLite · 轻巧记录')
+        self.exit_on_close = False
         self.resize(590, 530)
         self.setMinimumSize(530, 480)
         self.setStyleSheet(STYLE)
@@ -128,7 +130,7 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.addWidget(button('压缩已有文件', self.compress_requested.emit))
         bottom.addStretch()
-        self.status_label = label('准备就绪', 'muted')
+        self.status_label = label('最小化后可用快捷键 · 关闭即退出', 'muted')
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         bottom.addWidget(self.status_label, 1)
         layout.addLayout(bottom)
@@ -139,6 +141,13 @@ class MainWindow(QMainWindow):
         self.record_button.setText(f'停止录制  {seconds // 60:02d}:{seconds % 60:02d}' if recording else '录制屏幕')
         self.record_button.style().unpolish(self.record_button)
         self.record_button.style().polish(self.record_button)
+
+    def closeEvent(self, event):
+        if self.exit_on_close:
+            event.ignore()
+            self.quit_requested.emit()
+        else:
+            super().closeEvent(event)
 
     def set_status(self, text):
         self.status_label.setText(text)
@@ -165,6 +174,8 @@ class _ImageWorker(QThread):
             self.succeeded.emit(result)
         except (OSError, ValueError, TypeError, ImportError, RuntimeError) as error:
             self.failed.emit(str(error))
+        finally:
+            self.image = None
 
 
 class ImageDialog(QDialog):
@@ -172,7 +183,8 @@ class ImageDialog(QDialog):
 
     def __init__(self, image, root, parent=None):
         super().__init__(parent)
-        self.image = image.copy()
+        # Read-only shared ownership; resizing/encoding always creates its own result.
+        self.image = image
         self.root = Path(root)
         self._worker = None
         self.output_path = None
@@ -183,13 +195,14 @@ class ImageDialog(QDialog):
         layout.setContentsMargins(26, 24, 26, 24)
         layout.setSpacing(16)
         layout.addWidget(label('这一刻，已为你留住', 'title'))
-        preview = QLabel()
+        preview = self.preview = QLabel()
         preview.setObjectName('preview')
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview.setMinimumHeight(230)
         thumbnail = self.image.copy()
         thumbnail.thumbnail((660, 300), Image.Resampling.LANCZOS)
         preview.setPixmap(pil_pixmap(thumbnail))
+        thumbnail.close()
         layout.addWidget(preview, 1)
         form = QFormLayout()
         self.format_combo = QComboBox()
@@ -331,10 +344,21 @@ class ImageDialog(QDialog):
 
     @Slot()
     def _worker_finished(self):
+        if self._worker is None:
+            return
         self._worker.deleteLater()
         self._worker = None
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+
+    def release_resources(self):
+        if self._worker is not None:
+            # Modal close is normally deferred until finished; also handle exception cleanup.
+            self._worker.wait()
+            self._worker.deleteLater()
+            self._worker = None
+        self.preview.clear()
+        self.image = None
 
     def reject(self):
         if self._worker is not None:

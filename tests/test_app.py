@@ -2,14 +2,13 @@ from screenlite.app import Controller
 from screenlite.geometry import Rect
 
 
-def test_controller_starts_idle_and_hides_to_tray(qtbot, qapp, tmp_path):
+def test_controller_shows_main_window_even_with_saved_settings(qtbot, qapp, tmp_path):
+    from screenlite.config import SettingsStore, DEFAULTS
+    SettingsStore(tmp_path).save(DEFAULTS)
     controller = Controller(qapp, tmp_path, enable_hotkeys=False)
     qtbot.addWidget(controller.window)
     assert controller.state == 'idle'
-    controller.show_window()
     assert controller.window.isVisible()
-    controller.window.close()
-    assert not controller.window.isVisible()
     controller.shutdown()
 
 

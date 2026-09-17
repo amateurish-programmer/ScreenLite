@@ -46,6 +46,7 @@ class Controller(QObject):
         self.store = SettingsStore(self.root)
         self.settings = self.store.load()
         self.state = 'idle'
+        self._shutdown = False
         self.overlays = []
         self.frames = {}
         self._closing_overlays = False
@@ -61,6 +62,8 @@ class Controller(QObject):
         self._record_timer.timeout.connect(self._update_recording)
         self._elapsed = QElapsedTimer()
         self.window = MainWindow()
+        self.window.exit_on_close = True
+        self.window.quit_requested.connect(self.request_quit)
         self.window.shortcut_label.setText(f"{self.settings['screenshot_hotkey']} 截图    ·    {self.settings['record_hotkey']} 录屏")
         self.window.setWindowIcon(app_icon())
         self.window.capture_requested.connect(lambda: self.begin_selection('capture'))
@@ -90,6 +93,7 @@ class Controller(QObject):
                 QTimer.singleShot(0, self.show_window)
         if self.store.warning:
             self.window.set_status(self.store.warning)
+        self.show_window()
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -188,7 +192,7 @@ class Controller(QObject):
         self.state = 'ready'
         output = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
         toolbar = ScreenshotToolbar(image, output, self.window)
-        if hasattr(self, '_capture_anchor'):
+        if getattr(self, '_capture_anchor', None):
             screen, rect = self._capture_anchor
             available = screen.availableGeometry()
             toolbar.adjustSize()
@@ -198,29 +202,38 @@ class Controller(QObject):
                          max(available.y(), min(y, available.bottom() - toolbar.height())))
         detail = []
         toolbar.details_requested.connect(lambda: detail.append(True))
-        toolbar.copied.connect(lambda: self.tray.showMessage('截图已复制', f'{image.width} × {image.height} px',
+        copied_message = f'{image.width} × {image.height} px'
+        toolbar.copied.connect(lambda: self.tray.showMessage('截图已复制', copied_message,
                                                             QSystemTrayIcon.MessageIcon.Information, 1800))
         if self.settings['copy_after_capture']:
             QTimer.singleShot(0, toolbar.auto_copy)
         try:
             toolbar.exec()
+        finally:
+            self._capture_anchor = None
+            toolbar.release_resources()
+            toolbar.deleteLater()
+            self.state = 'idle'
+        try:
             if detail:
                 self._show_image(image)
         finally:
-            toolbar.deleteLater()
             self.state = 'idle'
 
     def _show_image(self, image):
         from screenlite.ui.dialogs import ImageDialog
         self.state = 'exporting'
+        dialog = None
         try:
             output = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
             dialog = ImageDialog(image, output, self.window)
             preset = 'clear' if self.settings['preset'] == 'ultra' else self.settings['preset']
             dialog.quality_combo.setCurrentIndex(max(0, dialog.quality_combo.findData(preset)))
             dialog.exec()
-            dialog.deleteLater()
         finally:
+            if dialog is not None:
+                dialog.release_resources()
+                dialog.deleteLater()
             self.state = 'idle'
 
     def toggle_record(self):
@@ -326,6 +339,7 @@ class Controller(QObject):
             self.countdown.close()
             self.countdown.deleteLater()
             self.countdown = None
+            self._countdown_label = None
 
     def _countdown_tick(self):
         self._remaining -= 1
@@ -408,6 +422,7 @@ class Controller(QObject):
     def _show_video(self, source, recorded=False):
         from screenlite.ui.dialogs import VideoExportDialog
         self.state = 'exporting'
+        dialog = None
         try:
             dialog = VideoExportDialog(source, self.root, self.window)
             dialog.output_directory = Path(self.settings['output_dir']) if self.settings['output_dir'] else self.root / 'exports'
@@ -421,10 +436,11 @@ class Controller(QObject):
                     source.unlink(missing_ok=True)
             elif recorded:
                 self.window.set_status('录制素材已保留，可从托盘“打开录制素材”继续导出')
-            dialog.deleteLater()
         except (OSError, ValueError) as error:
             self.error(f'导出未完成，原始文件已保留：{error}')
         finally:
+            if dialog is not None:
+                dialog.deleteLater()
             self.state = 'idle'
 
     def open_recordings(self):
@@ -450,7 +466,11 @@ class Controller(QObject):
             return
         try:
             with Image.open(source) as opened:
-                self._show_image(ImageOps.exif_transpose(opened).copy())
+                image = ImageOps.exif_transpose(opened)
+            try:
+                self._show_image(image)
+            finally:
+                image.close()
         except Exception as error:
             self.error(f'无法读取文件：{error}')
 
@@ -459,6 +479,7 @@ class Controller(QObject):
             return
         from screenlite.ui.dialogs import SettingsDialog
         self.state = 'settings'
+        dialog = None
         try:
             dialog = SettingsDialog(self.settings, self.window)
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -478,9 +499,13 @@ class Controller(QObject):
         except (ValueError, OSError) as error:
             self.error(str(error))
         finally:
+            if dialog is not None:
+                dialog.deleteLater()
             self.state = 'idle'
 
     def request_quit(self):
+        if self._shutdown:
+            return
         if self.state == 'probing':
             self._quit_after_record = True
             self._cancel_probe()
@@ -501,6 +526,9 @@ class Controller(QObject):
         self.app.quit()
 
     def shutdown(self):
+        if self._shutdown:
+            return
+        self._shutdown = True
         self._countdown_timer.stop()
         self._record_timer.stop()
         self._close_countdown()
@@ -508,7 +536,12 @@ class Controller(QObject):
         if self.hotkeys:
             self.hotkeys.clear()
             self.app.removeNativeEventFilter(self.hotkeys)
+            self.hotkeys = None
         self.tray.hide()
+        self.tray.setContextMenu(None)
+        self.menu.close()
+        self.menu.deleteLater()
+        self._capture_anchor = None
         self.window.hide()
 
 
@@ -535,8 +568,6 @@ def main():
         first_run = not controller.store.path.exists()
         if first_run:
             controller.store.save(controller.settings)
-        if args.show or first_run or not QSystemTrayIcon.isSystemTrayAvailable():
-            controller.show_window()
         if args.smoke_test:
             QTimer.singleShot(1000, controller.request_quit)
         app.aboutToQuit.connect(controller.shutdown)
