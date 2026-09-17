@@ -78,3 +78,43 @@ def test_worker_releases_source_after_success(qtbot, tmp_path):
     qtbot.waitUntil(lambda: dialog._worker is None, timeout=10000)
     assert worker.image is None
     assert (tmp_path / 'export.png').exists()
+
+
+def test_capture_releases_full_desktop_before_opening_export(qtbot, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QRect
+    from screenlite import app as application
+    from screenlite.geometry import Rect
+
+    controller = Controller(qapp, tmp_path, enable_hotkeys=False)
+    qtbot.addWidget(controller.window)
+    references = []
+
+    def synthetic_capture(bounds):
+        image = Image.new('RGB', (bounds.width, bounds.height), '#146A5A')
+        references.append(weakref.ref(image))
+        return image
+
+    monkeypatch.setattr(application, 'capture_monitor', synthetic_capture)
+    monkeypatch.setattr(application, 'monitor_bounds', lambda: {
+        screen.name(): Rect(0, 0, screen.geometry().width() * 2, screen.geometry().height() * 2)
+        for screen in qapp.screens()
+    })
+    controller.state = 'selecting'
+    controller._capture_screens('capture')
+    assert all(reference() is None for reference in references)
+    overlays = controller.overlays.copy()
+    overlays[0].selection = QRect(20, 30, 100, 80)
+    viewed = []
+
+    def preview(image):
+        assert controller.frames == {}
+        assert controller.overlays == []
+        assert all(overlay.pixmap.isNull() for overlay in overlays)
+        assert image.size == (200, 160)
+        assert image.getpixel((0, 0))[:3] == (20, 106, 90)
+        viewed.append(image.size)
+
+    monkeypatch.setattr(controller, '_show_capture', preview)
+    controller._selected(qapp.screens()[0].name(), overlays[0].selection, 'capture')
+    assert viewed == [(200, 160)]
+    controller.shutdown()

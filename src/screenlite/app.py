@@ -11,7 +11,7 @@ from PySide6.QtCore import QElapsedTimer, QLockFile, QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QVBoxLayout
 
-from screenlite.capture import capture_monitor, image_pixmap
+from screenlite.capture import capture_monitor, image_pixmap, qimage_pil
 from screenlite.config import SettingsStore
 from screenlite.geometry import Rect, logical_to_physical
 from screenlite.platform_win import Hotkeys, enable_dpi_awareness, exclude_from_capture, monitor_bounds
@@ -133,16 +133,18 @@ class Controller(QObject):
                 bounds = native.get(screen.name())
                 if bounds is None:
                     raise RuntimeError('无法匹配显示器坐标，请重新连接显示器后重试')
-                frame = capture_monitor(bounds)
                 scale = bounds.width / screen.geometry().width()
-                self.frames[screen.name()] = (frame, bounds, scale)
-            focus = None
-            for screen in self.app.screens():
-                frame, bounds, scale = self.frames[screen.name()]
-                overlay = SelectionOverlay(screen, image_pixmap(frame, scale), mode=mode)
+                with capture_monitor(bounds) as frame:
+                    overlay = SelectionOverlay(screen, image_pixmap(frame, scale), mode=mode)
+                del frame
                 overlay.selected.connect(lambda rect, name=screen.name(): self._selected(name, rect, mode))
                 overlay.cancelled.connect(self.cancel_selection)
                 self.overlays.append(overlay)
+                self.frames[screen.name()] = (bounds, scale, overlay)
+            # Capture every monitor before showing any overlay to keep captures clean.
+            focus = None
+            for screen in self.app.screens():
+                _, _, overlay = self.frames[screen.name()]
                 overlay.show()
                 if screen.geometry().contains(QCursor.pos()):
                     focus = overlay
@@ -157,6 +159,8 @@ class Controller(QObject):
         self._closing_overlays = True
         for overlay in self.overlays:
             overlay.close()
+            # deleteLater alone can leave large buffers alive across a nested modal loop.
+            overlay.release_resources()
             overlay.deleteLater()
         self.overlays.clear()
         self._closing_overlays = False
@@ -171,21 +175,30 @@ class Controller(QObject):
     def _selected(self, name, rect, mode):
         if self.state != 'selecting':
             return
-        frame, bounds, scale = self.frames[name]
+        bounds, scale, overlay = self.frames[name]
         local = Rect(rect.x(), rect.y(), rect.width(), rect.height())
         physical = logical_to_physical(local, bounds, scale)
         single_screen = len(self.frames) == 1
+        image = None
+        if mode == 'capture':
+            try:
+                image = qimage_pil(overlay.render_selection())
+            except (ValueError, RuntimeError, MemoryError) as error:
+                self.cancel_selection()
+                self.error(f'无法生成截图：{error}')
+                return
         self._close_overlays()
         self.frames.clear()
         if mode == 'record':
             monitor_local = Rect(physical.x - bounds.x, physical.y - bounds.y, physical.width, physical.height)
             self.prepare_recording(physical, monitor_local, single_screen)
             return
-        x, y = physical.x - bounds.x, physical.y - bounds.y
-        image = frame.crop((x, y, min(frame.width, x + physical.width), min(frame.height, y + physical.height)))
         screen = next((s for s in self.app.screens() if s.name() == name), self.app.primaryScreen())
         self._capture_anchor = (screen, rect)
-        self._show_capture(image)
+        try:
+            self._show_capture(image)
+        finally:
+            image.close()
 
     def _show_capture(self, image):
         from screenlite.ui.toolbars import ScreenshotToolbar

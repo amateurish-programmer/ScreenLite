@@ -6,7 +6,7 @@ Windows 10/11 x64 便携截图、区域录屏与图片/视频压缩工具。
 
 ## 便携版
 
-解压 `ScreenLite-0.1.0-windows-x64.zip`，运行其中的 `ScreenLite.exe`。保持 `_internal/` 和 `bin/` 在旁边。
+解压 `ScreenLite-0.2.0-windows-x64.zip`，运行其中的 `ScreenLite.exe`。保持 `_internal/` 和 `bin/` 在旁边。
 详细操作和恢复方法见 [使用说明](docs/USAGE.md)。首版为本地测试版。
 
 ## 开发运行
@@ -16,7 +16,7 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\python.exe -m screenlite
 ```
 
-默认截图 `Ctrl+Alt+A`，录屏开始/停止 `Ctrl+Alt+R`。关闭主窗口后驻留托盘，托盘菜单可退出。
+默认截图 `Ctrl+Alt+A`，录屏开始/停止 `Ctrl+Alt+R`。启动显示主界面，最小化继续待命，关闭主窗口即退出。截图支持矩形、椭圆、箭头、画笔、马赛克和文字标注。
 本地设置、录制临时文件和日志位于程序目录 `data/`，不上传网络。
 首版不录音、不跨屏录制；每块屏幕分别选区，适配各自缩放倍率。
 

@@ -20,3 +20,10 @@ def image_pixmap(image: Image.Image, scale: float = 1.0) -> QPixmap:
     pixmap = QPixmap.fromImage(qimage)
     pixmap.setDevicePixelRatio(scale)
     return pixmap
+
+
+def qimage_pil(image: QImage) -> Image.Image:
+    """Detach only the selected physical pixels from Qt for read-only export."""
+    rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    return Image.frombytes('RGBA', (rgba.width(), rgba.height()), rgba.constBits(),
+                           'raw', 'RGBA', rgba.bytesPerLine())
