@@ -138,3 +138,58 @@ def test_settings_rejects_identical_hotkeys(qtbot):
     qtbot.addWidget(dialog)
     dialog.accept()
     assert dialog.result() == 0
+
+
+def test_custom_width_export_matches_preview(qtbot, tmp_path):
+    dialog = ImageDialog(Image.new('RGB', (2560, 1600), 'navy'), tmp_path)
+    qtbot.addWidget(dialog)
+    dialog.size_combo.setCurrentIndex(4)
+    dialog.width_spin.setValue(500)
+    path = tmp_path / 'custom.png'
+    dialog.start_export(path)
+    qtbot.waitUntil(lambda: dialog._worker is None, timeout=10000)
+    with Image.open(path) as result:
+        assert result.size == (500, 312)
+    assert 'B' in dialog.status_label.text()
+
+
+def test_video_chooser_uses_configured_output_directory(qtbot, tmp_path, monkeypatch):
+    from screenlite.ui.dialogs import VideoExportDialog
+    dialog = VideoExportDialog(tmp_path / 'input.mp4', tmp_path)
+    qtbot.addWidget(dialog)
+    output = tmp_path / 'exports'
+    dialog.output_directory = output
+    defaults = []
+
+    def choose(parent, title, default, filters):
+        defaults.append(default)
+        return '', ''
+
+    monkeypatch.setattr('screenlite.ui.dialogs.QFileDialog.getSaveFileName', choose)
+    dialog.choose_export()
+    assert output.is_dir()
+    assert defaults == [str(output / 'input_分享.mp4')]
+
+
+def test_video_result_reports_growth_instead_of_claiming_savings(qtbot, tmp_path):
+    from screenlite.ui.dialogs import VideoExportDialog
+    source, target = tmp_path / 'input.mp4', tmp_path / 'output.mp4'
+    source.write_bytes(b'a' * 100)
+    target.write_bytes(b'b' * 200)
+    dialog = VideoExportDialog(source, tmp_path)
+    qtbot.addWidget(dialog)
+    dialog._done(str(target))
+    assert '100 B' in dialog.status_label.text()
+    assert '200 B' in dialog.status_label.text()
+    assert '增大' in dialog.status_label.text()
+
+
+def test_video_chooser_reports_unusable_directory(qtbot, tmp_path):
+    from screenlite.ui.dialogs import VideoExportDialog
+    invalid_directory = tmp_path / 'file.txt'
+    invalid_directory.write_text('occupied', encoding='utf-8')
+    dialog = VideoExportDialog(tmp_path / 'input.mp4', tmp_path)
+    qtbot.addWidget(dialog)
+    dialog.output_directory = invalid_directory
+    dialog.choose_export()
+    assert '无法创建' in dialog.status_label.text()

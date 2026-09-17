@@ -46,9 +46,15 @@ def export_image(
     width: int,
     height: int,
     preset: str = "balanced",
+    *,
+    exact_size: bool = False,
 ) -> Path:
     """Fit inside the requested box and atomically export to a *new* path.
 
+    By default width/height are bounding limits and aspect ratio is preserved.
+    A caller that already computed and displayed rounded pixel dimensions may
+    set exact_size=True to use those exact dimensions without a second aspect
+    fit. The caller then owns aspect-ratio calculation (including EXIF rotation).
     Call this synchronous encoder from a worker for large images. JPEG alpha is
     composited on white; PNG stays lossless for all three quality presets.
     """
@@ -64,7 +70,11 @@ def export_image(
     if target.exists():
         raise FileExistsError(f"文件已存在，请选择新文件名：{target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    resized = ImageOps.contain(ImageOps.exif_transpose(image), (width, height), Image.Resampling.LANCZOS)
+    oriented = ImageOps.exif_transpose(image)
+    if exact_size:
+        resized = oriented.resize((width, height), Image.Resampling.LANCZOS)
+    else:
+        resized = ImageOps.contain(oriented, (width, height), Image.Resampling.LANCZOS)
     options = {}
     if format_name == "JPEG":
         rgba = resized.convert("RGBA")

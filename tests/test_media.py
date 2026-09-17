@@ -16,6 +16,18 @@ def test_export_preserves_aspect_and_source_pixels(tmp_path):
     assert image.size == (800, 400)
 
 
+@pytest.mark.parametrize("suffix", [".png", ".jpg", ".webp"])
+def test_export_exact_size_preserves_callers_rounded_pixel_dimensions(tmp_path, suffix):
+    from screenlite.media import export_image
+
+    image = Image.new("RGB", (2560, 1600), "navy")
+    target = tmp_path / ("custom" + suffix)
+    export_image(image, target, 500, 312, exact_size=True)
+    with Image.open(target) as result:
+        assert result.size == (500, 312)
+    assert image.size == (2560, 1600)
+
+
 @pytest.mark.parametrize("suffix,format_name", [(".jpg", "JPEG"), (".webp", "WEBP"), (".png", "PNG")])
 @pytest.mark.parametrize("preset", ["clear", "balanced", "small"])
 def test_export_formats_accept_transparent_images(tmp_path, suffix, format_name, preset):

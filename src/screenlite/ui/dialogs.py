@@ -51,6 +51,14 @@ def pil_pixmap(image):
     return QPixmap.fromImage(qimage)
 
 
+def file_size_text(size):
+    if size < 1024:
+        return f'{size} B'
+    if size < 1024 * 1024:
+        return f'{size / 1024:.1f} KB'
+    return f'{size / (1024 * 1024):.2f} MB'
+
+
 class _Illustration(QWidget):
     def __init__(self):
         super().__init__()
@@ -152,7 +160,7 @@ class _ImageWorker(QThread):
                 result = self.image.resize(self.size, Image.Resampling.LANCZOS)
             else:
                 from screenlite.media import export_image
-                result = export_image(self.image, self.path, *self.size, self.preset)
+                result = export_image(self.image, self.path, *self.size, self.preset, exact_size=True)
             self.succeeded.emit(result)
         except (OSError, ValueError, TypeError, ImportError, RuntimeError) as error:
             self.failed.emit(str(error))
@@ -278,7 +286,11 @@ class ImageDialog(QDialog):
     @Slot(object)
     def _saved(self, path):
         self.output_path = Path(path)
-        self.status_label.setText('已保存：' + str(path))
+        try:
+            size = ' · ' + file_size_text(self.output_path.stat().st_size)
+        except OSError:
+            size = ''
+        self.status_label.setText('已保存' + size + '：' + str(path))
         self.exported.emit(str(path))
 
     @Slot()
@@ -375,6 +387,7 @@ class VideoExportDialog(QDialog):
     def __init__(self, source, root, parent=None):
         super().__init__(parent)
         self.source, self.root = Path(source), Path(root)
+        self.output_directory = self.source.parent
         self.output_path = None
         self._job = None
         self._close_when_done = False
@@ -421,7 +434,13 @@ class VideoExportDialog(QDialog):
         return self._job is not None
 
     def choose_export(self):
-        default = self.source.with_name(self.source.stem + '_分享.mp4')
+        directory = Path(self.output_directory)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self.status_label.setText('无法创建保存位置：' + str(error))
+            return
+        default = directory / (self.source.stem + '_分享.mp4')
         path, _ = QFileDialog.getSaveFileName(self, '保存视频', str(default), 'MP4 视频 (*.mp4)')
         if path:
             target = Path(path)
@@ -468,7 +487,19 @@ class VideoExportDialog(QDialog):
         self.output_path = Path(path)
         self._release_job()
         self.progress.setValue(100)
-        self.status_label.setText('已导出：' + str(path))
+        detail = ''
+        try:
+            after = self.output_path.stat().st_size
+            detail = file_size_text(after)
+            before = self.source.stat().st_size
+            change = '大小不变'
+            if before and before != after:
+                direction = '减小' if after < before else '增大'
+                change = f'{direction} {abs(after - before) / before:.1%}'
+            detail = f'{file_size_text(before)} → {file_size_text(after)}（{change}）'
+        except OSError:
+            pass
+        self.status_label.setText(f'已导出 · {detail}\n{path}' if detail else '已导出：' + str(path))
         self.exported.emit(str(path))
 
     def _failed(self, error):
