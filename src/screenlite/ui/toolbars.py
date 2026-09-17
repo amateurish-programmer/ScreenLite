@@ -89,6 +89,7 @@ class ScreenshotToolbar(QDialog):
 
     @Slot(str)
     def _failed(self, error):
+        self._pending_action = None
         self.status_label.setText('保存失败：' + error)
 
     @Slot()
